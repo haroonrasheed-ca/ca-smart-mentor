@@ -476,7 +476,7 @@ export function saveSettings(f) {
   num('weeklyRestDay', -1, 6);
   num('baselineWeekdayMin', 15, 600);
   num('maintenanceMin', 10, 120);
-  num('minStreakMin', 5, 120);
+  num('minStreakMin', 5, 600);
   num('landingPadMin', 5, 60);
   num('officeEndHour', 12, 23);
   if (f.ifThen !== undefined) set.ifThen = String(f.ifThen).slice(0, 200);
