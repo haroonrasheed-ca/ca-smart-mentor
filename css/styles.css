@@ -221,8 +221,10 @@ details[open] { display: grid; gap: 10px; }
 .one-text { font-size: clamp(1.5rem, 6.5vw, 2.2rem); line-height: 1.25; text-wrap: balance; font-weight: 600; }
 
 /* ---------- running session ---------- */
-.session { position: fixed; inset: 0; z-index: 40; background: var(--ink); display: grid; place-items: center; padding: 24px; }
-.session-inner { width: 100%; max-width: 520px; display: grid; gap: 18px; text-align: center; }
+.session { position: fixed; inset: 0; z-index: 40; background: var(--ink); display: grid; place-items: start center; padding: 24px; overflow-y: auto; }
+.session-inner { width: 100%; max-width: 520px; display: grid; gap: 18px; text-align: center; margin-block: auto; }
+.run-note-l { text-align: left; }
+.run-note-l textarea { resize: none; }
 .session-text { font-size: 1.35rem; line-height: 1.35; text-wrap: balance; }
 .timer { font-family: var(--serif); font-variant-numeric: tabular-nums; font-size: clamp(3.6rem, 18vw, 6rem); line-height: 1; }
 
@@ -308,3 +310,16 @@ body[data-tunnel="1"] .toast { bottom: 24px; }
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   .burst circle, .burst path { stroke-dashoffset: 0; }
 }
+
+
+/* ---------- Today (single screen) ---------- */
+.today-progress { display: grid; gap: 8px; margin-top: 4px; }
+.today-progress .split b { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+.check-grid { display: grid; gap: 14px; }
+.check-grid h3 { font-size: .95rem; font-weight: 600; margin-bottom: 6px; }
+ul.sessions.day li { align-items: flex-start; }
+.s-note { margin: 4px 0 0; font-size: .92rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ---------- Course outlook ---------- */
+.verdict { margin: 4px 0; padding: 10px 12px; border-radius: 10px; background: var(--panel-2); border-left: 3px solid var(--sea); }
+.verdict.warn { border-left-color: var(--lamp); }
