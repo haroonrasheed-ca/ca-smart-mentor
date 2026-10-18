@@ -265,3 +265,28 @@ test('backup export / import round-trips', () => {
   assert.equal(Object.keys(S.getState().topics).length, before);
   assert.throws(() => S.importBackup('{"app":"other"}'), /not a CA Smart Mentor backup/);
 });
+
+test('notes: jot while the timer runs, edit after saving, shown on Today and Pace', () => {
+  const micro = A.currentMicro();
+  A.startSession({ topicId: micro.topicId, mode: 'full', text: micro.text });
+  A.setRunningNote('Lease modification still unclear');
+  S.getState().runtime.running.startTs -= 12 * 60000;
+  const draft = A.stopSession();
+  assert.equal(draft.notes, 'Lease modification still unclear');
+  const sheet = Sh.logSheet({ st: S.getState(), draft });
+  assert.match(sheet, /name="notes"/);
+  assert.match(sheet, /Lease modification still unclear/);
+  A.saveSession({ minutes: 12, topicId: micro.topicId, activity: 'reading', focus: 3, status: 'doing', notes: 'Lease modification still unclear, redo Q4' });
+  const row = E.liveSessions(S.getState()).find((x) => x.notes && x.notes.includes('redo Q4'));
+  assert.ok(row, 'note stored on the session');
+  assert.ok(A.setSessionNote(row.id, 'Edited note'));
+  A.setEnergy('green');
+  A.setTunnel(false);
+  const today_ = V.todayView({ ...ctx(), tunnel: false });
+  clean(today_, 'today');
+  assert.match(today_, /Edited note/);
+  assert.match(today_, /data-act="note-edit"/);
+  assert.match(today_, /data-act="start"/);
+  assert.match(V.paceView(ctx()), /Edited note/);
+  assert.match(Sh.noteSheet({ session: row, topicName: 'X' }), /<textarea/);
+});
