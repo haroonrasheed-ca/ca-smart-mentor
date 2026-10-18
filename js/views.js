@@ -1,6 +1,6 @@
 // Pure view builders: state in, HTML string out. No DOM access, so they can be smoke-tested in Node.
 
-import { liveTopics, liveSessions, subjectProgress, weeklyStats, studyCapital, modeTarget, paceSeries, routeOptions } from './engine.js';
+import { liveTopics, liveSessions, subjectProgress, weeklyStats, studyCapital, modeTarget, paceSeries, routeOptions, courseOutlook } from './engine.js';
 import * as M from './mentor.js';
 import { esc, fmtMin, fmtDate, fmtClock, addDays, parseD } from './utils.js';
 import { paceChart } from './chart.js';
@@ -53,17 +53,6 @@ function bar(pct) {
   return `<div class="bar" role="progressbar" aria-valuenow="${Math.round(pct)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${Math.max(0, Math.min(100, pct))}%"></i></div>`;
 }
 
-function phaseTabs(phase) {
-  const items = [
-    ['morning', 'Morning'],
-    ['evening', 'Evening'],
-    ['night', 'Night']
-  ];
-  return `<div class="seg" role="tablist">${items
-    .map(([v, l]) => `<button role="tab" class="${phase === v ? 'on' : ''}" aria-selected="${phase === v}" data-act="phase" data-v="${v}">${l}</button>`)
-    .join('')}</div>`;
-}
-
 export function topBar(c) {
   const sk = c.st.meta.streak;
   const streak = sk.current + (c.todayMin >= c.st.meta.settings.minStreakMin ? 1 : 0);
@@ -82,8 +71,8 @@ export function topBar(c) {
 export function todayView(c) {
   const topics = liveTopics(c.st);
   if (c.plan.status === 'setup' || !topics.length) return setupCard(c, topics.length);
-  const body = c.tunnel ? tunnelHtml(c) : c.phase === 'morning' ? morningHtml(c) : c.phase === 'night' ? nightHtml(c) : eveningHtml(c);
-  return `${c.tunnel ? '' : phaseTabs(c.phase)}${body}${c.tunnel ? '' : cleanSlateLink()}`;
+  const body = c.tunnel ? tunnelHtml(c) : todayHtml(c);
+  return `${body}${c.tunnel ? '' : cleanSlateLink()}`;
 }
 
 function setupCard(c, topicCount) {
@@ -123,30 +112,6 @@ function tunnelHtml(c) {
   </section>`;
 }
 
-function morningHtml(c) {
-  const s = c.st.meta.settings;
-  const sc = M.statusCard(c.plan);
-  const day = c.st.days[c.today] || {};
-  const recent = liveTopics(c.st)
-    .filter((t) => t.lastTouched)
-    .sort((a, b) => (a.lastTouched < b.lastTouched ? 1 : -1))
-    .slice(0, 3);
-  const sleep = [
-    [5, 'Under 6h'],
-    [6.5, '6–7h'],
-    [8, '7h+']
-  ];
-  return `${card(`<p class="eyebrow">Your route</p><h1 class="serif">${esc(sc.title)}</h1><p class="lead">${esc(sc.body)}</p>
-    ${c.plan.needsRoute ? '<button class="btn primary" data-act="route-open">Choose a route</button>' : ''}`, `status ${sc.tone}`)}
-  ${card(`<h2>What kind of office day?</h2><p class="muted">This sets tonight’s default. Change it any time.</p>${dayTypeRow(c.today, day.dayType || 'normal')}`)}
-  ${s.ifThen ? card(`<p class="eyebrow">Your plan, in your words</p><p class="quote serif">${esc(s.ifThen)}</p>${s.reward ? `<p class="muted">Reserved for study time: ${esc(s.reward)}</p>` : ''}`) : ''}
-  ${card(`<h2>Morning spark <span class="muted">· optional</span></h2><p class="muted">15 fresh minutes on the hardest thing, before the office takes your brain.</p><button class="btn" data-act="spark">Start a 15-minute spark</button>`)}
-  ${recent.length ? card(`<h2>Commute recall</h2><p class="muted">No screen needed. Say these out loud.</p><ul class="plain">${recent.map((t) => `<li>The 3 key points of <b>${esc(t.name)}</b></li>`).join('')}</ul>`) : ''}
-  ${card(`<h2>How did you sleep?</h2><div class="chips">${sleep
-    .map(([v, l]) => `<button class="chip ${Number(day.sleepHours) === v ? 'on' : ''}" data-act="sleep" data-v="${v}">${l}</button>`)
-    .join('')}</div>`)}`;
-}
-
 function landingPad(c) {
   if (c.todayMin > 0) return '';
   const lp = c.st.runtime.landingPad;
@@ -173,58 +138,110 @@ function landingPad(c) {
   );
 }
 
-function eveningHtml(c) {
-  const s = c.st.meta.settings;
-  const target = modeTarget(c.plan, s, c.energy);
-  const pct = target > 0 ? (c.todayMin / target) * 100 : c.todayMin > 0 ? 100 : 0;
-  const sk = c.st.meta.streak;
-  const streak = sk.current + (c.todayMin >= s.minStreakMin ? 1 : 0);
-  return `${landingPad(c)}
-  ${energyRow(c)}
-  ${card(
-    `<p class="mentor serif">${esc(M.eveningMessage(c.energy, target, c.plan))}</p>
-    ${startButton('')}
-    ${nextLine(c)}
-    <div class="row center"><button class="link" data-act="tunnel-on">Show me just one thing</button><button class="link" data-act="manual-log">Log a session I forgot to time</button></div>`,
-    'hero'
-  )}
-  ${card(`<div class="split"><div><p class="eyebrow">Today</p><p class="num">${fmtMin(c.todayMin)}</p></div><div class="right"><p class="eyebrow">Tonight’s target</p><p class="num">${fmtMin(target)}</p></div></div>${bar(pct)}
-    <p class="muted">${streak} day streak${c.energy === 'red' ? ' · maintenance days keep it alive' : ''}</p>`)}`;
-}
-
-function nightHtml(c) {
+function todayHtml(c) {
   const s = c.st.meta.settings;
   const day = c.st.days[c.today] || {};
   const tomorrow = addDays(c.today, 1);
   const tDay = c.st.days[tomorrow] || {};
   const target = modeTarget(c.plan, s, c.energy || day.energy || '');
-  const capital = studyCapital(c.st);
+  const left = Math.max(0, target - c.todayMin);
+  const pct = target > 0 ? (c.todayMin / target) * 100 : c.todayMin > 0 ? 100 : 0;
   const sk = c.st.meta.streak;
   const streak = sk.current + (c.todayMin >= s.minStreakMin ? 1 : 0);
-  return `${card(
-    `<p class="eyebrow">Close-out</p><p class="mentor serif">${esc(M.nightMessage(c.todayMin, target, day.energy))}</p>
-    <div class="stats3">
-      <div><p class="num">${fmtMin(c.todayMin)}</p><p class="muted">today</p></div>
-      <div><p class="num">${streak}</p><p class="muted">${day.maintenance ? 'streak (maintenance day)' : 'day streak'}</p></div>
-      <div><p class="num">${fmtMin(capital)}</p><p class="muted">study capital</p></div>
-    </div>`,
+  const line =
+    c.todayMin === 0
+      ? M.eveningMessage(c.energy, target, c.plan)
+      : left === 0
+        ? M.nightMessage(c.todayMin, target, day.energy)
+        : `${fmtMin(c.todayMin)} banked. ${fmtMin(left)} more reaches today’s target.`;
+  const sessions = liveSessions(c.st)
+    .filter((x) => x.date === c.today)
+    .sort((a, b) => b.startTs - a.startTs);
+  const topicName = (id) => c.st.topics[id]?.name || 'Not on my list';
+
+  return `${landingPad(c)}
+  ${card(
+    `<p class="eyebrow">Today</p>
+    <p class="mentor serif">${esc(line)}</p>
+    ${s.ifThen && c.todayMin === 0 ? `<p class="muted">${esc(s.ifThen)}</p>` : ''}
+    <div class="today-progress">
+      <div class="split"><div><b>${fmtMin(c.todayMin)}</b> <span class="muted">of ${fmtMin(target)}</span></div><span class="muted">${streak} day streak</span></div>
+      ${bar(pct)}
+    </div>
+    ${startButton('')}
+    ${nextLine(c)}
+    ${c.plan.needsRoute ? '<div class="row center"><button class="btn primary" data-act="route-open">Choose a route</button></div>' : ''}
+    <div class="row center"><button class="link" data-act="tunnel-on">Show me just one thing</button><button class="link" data-act="manual-log">Log a session I forgot to time</button></div>`,
     'hero'
   )}
-  ${card(`<h2>Forecast</h2><p class="lead">${esc(M.headline(c.plan))}</p><p class="muted">${esc(c.recalc)}</p>`)}
+  ${card(
+    `<h2>Today’s sessions</h2>${
+      sessions.length
+        ? `<ul class="sessions day">${sessions
+            .map(
+              (x) => `<li><div><b>${fmtMin(x.minutes)}</b> <span class="muted">· ${esc(topicName(x.topicId))}${x.focus ? ` · focus ${x.focus}/5` : ''}</span>${x.notes ? `<p class="s-note">${esc(x.notes)}</p>` : ''}</div><button class="link" data-act="note-edit" data-id="${x.id}">${x.notes ? 'Edit note' : 'Add note'}</button></li>`
+            )
+            .join('')}</ul>`
+        : '<p class="muted">Nothing yet. Tap START and your session (with notes) will show up here.</p>'
+    }`
+  )}
+  ${card(
+    `<div class="check-grid">
+      <div><h3>Battery</h3>${energyRow(c, true)}</div>
+      <div><h3>What kind of office day?</h3>${dayTypeRow(c.today, day.dayType || 'normal')}</div>
+    </div>`
+  )}
   ${
-    c.todayMin === 0
+    c.todayMin === 0 && c.hour >= 20
       ? card(`<h2>What got in the way?</h2><p class="muted">One tap. It feeds the plan, not your guilt.</p><div class="chips">${MISS.map(
           (m) => `<button class="chip ${day.missReason === m ? 'on' : ''}" data-act="miss" data-v="${esc(m)}">${m}</button>`
         ).join('')}</div>`)
       : ''
   }
-  ${card(`<h2>Tomorrow</h2><p class="muted">Tell me what kind of day it looks like so the route can plan around it.</p>${dayTypeRow(tomorrow, tDay.dayType || 'normal')}
+  ${card(
+    `<h2>Tomorrow</h2><p class="muted">What kind of day does it look like?</p>${dayTypeRow(tomorrow, tDay.dayType || 'normal')}
     <label class="field-l" for="breadcrumb">First step for tomorrow <span class="muted">· start mid-thought</span></label>
-    <input class="field" id="breadcrumb" data-change="breadcrumb" data-date="${tomorrow}" maxlength="200" placeholder="e.g. finish the lease example on page 42" value="${esc(tDay.breadcrumb || '')}">`)}
-  ${card(`<p class="lead">Lights out by 11:00?</p><p class="muted">Sleep is when today’s revision gets filed. Protecting it is part of the plan.</p>`, 'quiet')}`;
+    <input class="field" id="breadcrumb" data-change="breadcrumb" data-date="${tomorrow}" maxlength="200" placeholder="e.g. finish the lease example on page 42" value="${esc(tDay.breadcrumb || '')}">`
+  )}`;
 }
 
 /* ------------------------------------------------------------------ PACE */
+
+const hrs = (m) => Math.round(m / 60);
+
+function outlookCard(o) {
+  if (!o.topics) return '';
+  const verdictText = {
+    comfortable: ['good', 'Comfortable. The pace you really keep is enough.'],
+    doable: ['good', `Doable, with a small step up: about ${fmtMin(o.needPerDay)} a day against your usual ${fmtMin(o.capacityMin)}.`],
+    stretch: ['warn', `A stretch. It needs about ${fmtMin(o.needPerDay)} a day against your usual ${fmtMin(o.capacityMin)}. Choose a route before it turns into stress.`],
+    unrealistic: ['warn', `Not realistic yet. It needs about ${fmtMin(o.needPerDay)} a day, far above your usual ${fmtMin(o.capacityMin)}. Choose a route now, not in week six.`]
+  }[o.verdict];
+  const basis =
+    o.basis === 'learned'
+      ? `Based on your own speed: you take ${o.multiplier.toFixed(2)}× your estimates (${o.nDone} topics finished).`
+      : 'Not measured yet. Each estimate is padded by its difficulty (harder topics get more) because first estimates run short. After 2 finished topics I switch to your real speed.';
+  return card(
+    `<p class="eyebrow">Course outlook</p>
+    <h2>About ${hrs(o.totalMin)} hours in total</h2>
+    <p class="muted">Likely range ${hrs(o.lowMin)}–${hrs(o.highMin)} h · ${hrs(o.spentMin)} h done · ${hrs(o.remainingMin)} h to go · ${o.topics} topics</p>
+    <p>Overall difficulty: <b>${esc(o.toughness)}</b> <span class="muted">(${o.difficulty} / 5)</span></p>
+    ${o.subjects
+      .map(
+        (x) => `<div class="subj"><div class="split"><b>${esc(x.subject)} <span class="pill soft">${esc(x.toughness)}</span></b><span class="muted">${hrs(x.totalMin)} h · ${x.share}%</span></div>${bar(x.share)}</div>`
+      )
+      .join('')}
+    ${o.hardest.length ? `<p class="muted">Hardest to get through: ${o.hardest.map((h) => `${esc(h.name)} (${fmtMin(h.min)})`).join(', ')}</p>` : ''}
+    ${verdictText ? `<p class="verdict ${verdictText[0]}">${esc(verdictText[1])}</p>${o.verdict === 'stretch' || o.verdict === 'unrealistic' ? '<button class="btn primary" data-act="route-open">Choose a route</button>' : ''}` : ''}
+    ${o.etaAtCapacity && o.examDate && o.verdict ? `<p class="muted">At your usual pace you would finish around ${fmtDate(o.etaAtCapacity)}.</p>` : ''}
+    <p class="tiny muted">${esc(basis)}</p>
+    ${
+      o.drift
+        ? `<p class="verdict warn">Your syllabus has changed since the ideal line was drawn (${o.drift.pct > 0 ? '+' : ''}${o.drift.pct}% against the ${hrs(o.drift.baseline)} h plan). The graph is comparing you with an old plan.</p><button class="btn" data-act="rebaseline">Reset the ideal line to today</button>`
+        : ''
+    }`
+  );
+}
 
 export function paceView(c) {
   const p = c.plan;
@@ -247,6 +264,7 @@ export function paceView(c) {
   return `${card(`<p class="eyebrow">Trajectory</p><h1 class="serif">${esc(M.headline(p))}</h1>
     <div class="chart-wrap">${sr ? paceChart(sr) : '<p class="muted">Your chart appears after the first daily plan is created.</p>'}</div>
     <div class="legend"><span class="lg ideal">Ideal</span><span class="lg actual">Actual</span><span class="lg forecast">Forecast ±30%</span></div>`, 'hero')}
+  ${outlookCard(courseOutlook(c.st, c.today))}
   <div class="tiles">
     <div class="tile"><p class="muted">Needed a day</p><p class="num">${fmtMin(p.unitPace)}</p></div>
     <div class="tile"><p class="muted">Your capacity</p><p class="num">${fmtMin(p.capacity.value)}</p><p class="tiny muted">${p.capacity.source === 'baseline' ? 'your estimate' : 'from your logs'}</p></div>
@@ -265,7 +283,7 @@ export function paceView(c) {
       <li><span>Average focus</span><b>${w.avgFocus ? w.avgFocus.toFixed(1) + ' / 5' : '—'}</b></li>
       <li><span>Time from opening the app to START</span><b>${lat(w.latPrev)} → ${lat(w.latThis)}</b></li>
       ${slotBest ? `<li><span>Sharpest slot so far</span><b>${slotBest[0]}</b></li>` : ''}
-      <li><span>Estimate multiplier</span><b>${p.mult.global.toFixed(2)}×</b></li>
+      <li><span>Your speed vs your estimates</span><b>${p.mult.nDone >= 2 ? `${p.mult.global.toFixed(2)}×` : 'not measured yet'}</b></li>
     </ul>
     ${w.maintShare > 0.5 ? '<p class="note">More than half of your recent days were maintenance days. That’s the body asking for something: sleep, a lighter route, or a rest day.</p>' : ''}`)}
   ${card(`<h2>Syllabus</h2>${subs.map((x) => `<div class="subj"><div class="split"><b>${esc(x.subject)}</b><span class="muted">${x.pct}% first pass · ${x.revised}/${x.topics} revised</span></div>${bar(x.pct)}</div>`).join('') || '<p class="muted">No topics yet.</p>'}`)}
@@ -274,7 +292,7 @@ export function paceView(c) {
     sessions.length
       ? `<ul class="sessions">${sessions
           .map(
-            (s) => `<li><div><b>${fmtMin(s.minutes)}</b> <span class="muted">· ${esc(topicName(s.topicId))}</span><br><span class="tiny muted">${fmtDate(s.date)}${s.focus ? ` · focus ${s.focus}/5` : ''}</span></div><button class="link" data-act="session-del" data-id="${s.id}" aria-label="Delete session">Delete</button></li>`
+            (s) => `<li><div><b>${fmtMin(s.minutes)}</b> <span class="muted">· ${esc(topicName(s.topicId))}</span><br><span class="tiny muted">${fmtDate(s.date)}${s.focus ? ` · focus ${s.focus}/5` : ''}</span>${s.notes ? `<p class="s-note">${esc(s.notes)}</p>` : ''}</div><div class="row"><button class="link" data-act="note-edit" data-id="${s.id}">${s.notes ? 'Edit note' : 'Add note'}</button><button class="link" data-act="session-del" data-id="${s.id}" aria-label="Delete session">Delete</button></div></li>`
           )
           .join('')}</ul>`
       : '<p class="muted">Nothing logged yet. Your first START will show up here.</p>'
@@ -293,7 +311,9 @@ export function topicsView(c) {
     );
   }
   const subjects = [...new Set(ts.map((t) => t.subject))];
+  const o = courseOutlook(c.st, c.today);
   return `<div class="row between"><h1 class="serif">Topics</h1><div class="row"><button class="btn ghost" data-act="import-open">Import</button><button class="btn" data-act="topic-new">Add topic</button></div></div>
+  <p class="muted">${o.topics} topics · about ${hrs(o.totalMin)} h in total (likely ${hrs(o.lowMin)}–${hrs(o.highMin)} h) · overall ${esc(o.toughness)}</p>
   ${subjects
     .map((subj) => {
       const list = ts.filter((t) => t.subject === subj);
