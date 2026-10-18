@@ -32,6 +32,9 @@ export function logSheet({ st, draft, today = dstr() }) {
       <option value="">Not on my list</option>
       ${subjects.map((s) => `<optgroup label="${esc(s)}">${topics.filter((t) => t.subject === s).map((t) => `<option value="${t.id}" ${t.id === sel ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</optgroup>`).join('')}
     </select></label>
+    <label class="field-l">Notes <span class="tiny">(optional: what you learned, where you stopped, what to revisit)</span>
+      <textarea class="field" name="notes" rows="3" maxlength="500" placeholder="e.g. Lease modification part is still unclear. Redo question 4 tomorrow.">${esc(draft.notes || '')}</textarea>
+    </label>
     <fieldset><legend>What did you do?</legend><div class="chips">
       ${[['reading', 'Read'], ['practice', 'Practice'], ['revision', 'Revise'], ['video', 'Video'], ['notes', 'Notes']].map(([v, l], i) => radio('activity', v, l, i === 0)).join('')}
     </div></fieldset>
@@ -44,6 +47,19 @@ export function logSheet({ st, draft, today = dstr() }) {
       <label class="field-l">Questions or pages done<input class="field" name="units" type="number" inputmode="numeric" min="0" max="999"></label>
     </details>
     <div class="row"><button class="btn primary big" type="submit">Save and bank it</button>${manual ? '' : '<button class="btn ghost" type="button" data-act="discard-draft">Discard</button>'}</div>
+  </form>`;
+}
+
+export function noteSheet({ session, topicName }) {
+  return `<form data-form="note" class="sheet-form">
+    ${close}
+    <h2 class="serif">Session note</h2>
+    <p class="muted">${esc(topicName)} · ${fmtMin(session.minutes)}</p>
+    <input type="hidden" name="id" value="${esc(session.id)}">
+    <label class="field-l">Note
+      <textarea class="field" name="notes" rows="5" maxlength="500" placeholder="What did you learn? Where did you stop? What to revisit?">${esc(session.notes || '')}</textarea>
+    </label>
+    <div class="row"><button class="btn primary big" type="submit">Save note</button></div>
   </form>`;
 }
 
