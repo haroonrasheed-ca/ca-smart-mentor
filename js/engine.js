@@ -11,6 +11,11 @@ export const WEIGHTS = { normal: 1, heavy: 0.5, off: 0 };
 export const REVISION_FACTOR = 0.3; // revision pass ≈ 30% of first-pass time
 export const FEASIBILITY_LIMIT = 1.4; // required pace / demonstrated capacity
 export const BALANCED_FACTOR = 1.15;
+// First estimates almost always run short (planning fallacy), and harder topics run shortest.
+// Until the app has seen you finish topics, each estimate is padded by its difficulty (1-5).
+// After 2+ finished topics the app switches to YOUR measured speed. Tune these numbers if you like.
+export const DIFFICULTY_PRIOR = { 1: 1.0, 2: 1.1, 3: 1.2, 4: 1.35, 5: 1.5 };
+export const priorMult = (difficulty) => DIFFICULTY_PRIOR[clamp(Math.round(Number(difficulty) || 3), 1, 5)];
 export const TIERS = [
   { id: 'tiny', min: 5 },
   { id: 'small', min: 10 },
@@ -60,14 +65,20 @@ export function subjectMultipliers(st) {
   const all = liveTopics(st);
   const done = all.filter((t) => (t.status === 'done' || t.status === 'revised') && t.firstPassMin > 0 && t.estMin > 0);
   const ratios = (arr) => arr.map((t) => t.firstPassMin / t.estMin);
-  const global = done.length >= 2 ? clamp(median(ratios(done)), 0.6, 2.5) : 1;
+  const globalLearned = done.length >= 2;
+  const global = globalLearned ? clamp(median(ratios(done)), 0.6, 2.5) : 1;
   const bySubject = {};
+  const learned = {};
   for (const subj of new Set(all.map((t) => t.subject))) {
     const ts = done.filter((t) => t.subject === subj);
     bySubject[subj] = ts.length >= 2 ? clamp(median(ratios(ts)), 0.6, 2.5) : global;
+    learned[subj] = ts.length >= 2 || globalLearned;
   }
-  return { global, bySubject };
+  return { global, bySubject, learned, nDone: done.length };
 }
+
+/** The multiplier for one topic: your measured speed if known, otherwise the difficulty guide. */
+export const topicMult = (mult, t) => (mult.learned?.[t.subject] ? mult.bySubject[t.subject] : priorMult(t.difficulty));
 
 export function topicRemaining(t, mult = 1) {
   if (t.skip) return 0;
@@ -88,7 +99,7 @@ export function remainingEffort(st) {
   const bySubject = {};
   let total = 0;
   for (const t of liveTopics(st)) {
-    const r = topicRemaining(t, mult.bySubject[t.subject] ?? 1);
+    const r = topicRemaining(t, topicMult(mult, t));
     items.push({ topic: t, rem: r });
     bySubject[t.subject] = (bySubject[t.subject] || 0) + r;
     total += r;
@@ -245,6 +256,99 @@ export function computePlan(st, today = dstr()) {
   };
 }
 
+/* ------------------------------------------------------------------ course outlook (before you start, and while you go) */
+
+export const toughnessLabel = (d) => (d < 2.2 ? 'Light' : d < 3 ? 'Moderate' : d < 3.8 ? 'Tough' : 'Very tough');
+
+/**
+ * "How many hours is this whole course really, and how hard is it?"
+ * Hours = what you already put in + what is still to come, padded realistically.
+ * The range is wide until the app has measured your own speed, then it narrows.
+ */
+export function courseOutlook(st, today = dstr()) {
+  const plan = computePlan(st, today);
+  const mult = subjectMultipliers(st);
+  const topics = liveTopics(st).filter((t) => !t.skip);
+  const [lo, hi] = mult.nDone >= 6 ? [0.9, 1.2] : mult.nDone >= 2 ? [0.85, 1.3] : [0.8, 1.45];
+  const subj = {};
+  let spent = 0;
+  let remaining = 0;
+  let dSum = 0;
+  let dW = 0;
+  for (const t of topics) {
+    const m = topicMult(mult, t);
+    const r = topicRemaining(t, m);
+    const sp = t.spentMin || 0;
+    const o = (subj[t.subject] ||= { subject: t.subject, topics: 0, spent: 0, remaining: 0, dSum: 0, dW: 0, marks: 0, learned: !!mult.learned[t.subject] });
+    o.topics += 1;
+    o.spent += sp;
+    o.remaining += r;
+    const w = Math.max(1, (t.estMin || 0) * m);
+    o.dSum += (Number(t.difficulty) || 3) * w;
+    o.dW += w;
+    o.marks += Number(t.weightage) || 0;
+    spent += sp;
+    remaining += r;
+    dSum += (Number(t.difficulty) || 3) * w;
+    dW += w;
+  }
+  const total = spent + remaining;
+  const subjects = Object.values(subj)
+    .map((o) => {
+      const d = o.dW ? o.dSum / o.dW : 3;
+      const tot = o.spent + o.remaining;
+      return { subject: o.subject, topics: o.topics, spentMin: Math.round(o.spent), remainingMin: Math.round(o.remaining), totalMin: Math.round(tot), share: total ? Math.round((tot / total) * 100) : 0, difficulty: Math.round(d * 10) / 10, toughness: toughnessLabel(d), learned: o.learned };
+    })
+    .sort((a, b) => b.totalMin - a.totalMin);
+  const avgD = dW ? dSum / dW : 3;
+  const hardest = topics
+    .filter((t) => (Number(t.difficulty) || 3) >= 4 && t.status !== 'revised')
+    .map((t) => ({ name: t.name, subject: t.subject, min: Math.round(topicRemaining(t, topicMult(mult, t))), difficulty: Number(t.difficulty) || 3 }))
+    .sort((a, b) => b.min - a.min)
+    .slice(0, 3);
+
+  // Can it be done at the pace you really keep?
+  const cap = plan.capacity.value;
+  const hasExam = plan.status !== 'setup' && plan.effDays > 0;
+  const f = plan.feasibility;
+  let verdict = null;
+  if (hasExam && remaining > 0) verdict = f <= 0.9 ? 'comfortable' : f <= BALANCED_FACTOR ? 'doable' : f <= FEASIBILITY_LIMIT ? 'stretch' : 'unrealistic';
+
+  // Has the syllabus changed since the ideal line was drawn?
+  const bp = st.plans?.[st.meta.activePlanId];
+  let drift = null;
+  if (bp && bp.baselineTotal > 0) {
+    const scopeNow = cumMinutes(minutesMap(st), bp.baselineStart, today) + remaining;
+    const pct = scopeNow / bp.baselineTotal - 1;
+    if (Math.abs(pct) >= 0.25) drift = { baseline: bp.baselineTotal, now: Math.round(scopeNow), pct: Math.round(pct * 100) };
+  }
+
+  return {
+    topics: topics.length,
+    spentMin: Math.round(spent),
+    remainingMin: Math.round(remaining),
+    totalMin: Math.round(total),
+    lowMin: Math.round(spent + remaining * lo),
+    highMin: Math.round(spent + remaining * hi),
+    toughness: toughnessLabel(avgD),
+    difficulty: Math.round(avgD * 10) / 10,
+    subjects,
+    hardest,
+    basis: mult.nDone >= 2 ? 'learned' : 'guide',
+    nDone: mult.nDone,
+    multiplier: mult.global,
+    verdict,
+    capacityMin: cap,
+    capacitySource: plan.capacity.source,
+    needPerDay: Math.round(plan.unitPace),
+    feasibility: f,
+    daysLeft: plan.effDays,
+    etaAtCapacity: remaining > 0 && cap > 0 ? forecastDate(st, today, remaining, cap) : null,
+    examDate: plan.examDate,
+    drift
+  };
+}
+
 /** Tonight's target for the chosen battery level. green = full, amber = half, red = empty. */
 export function modeTarget(plan, settings, energy) {
   if (energy === 'red') return settings.maintenanceMin;
@@ -316,7 +420,7 @@ export function routeOptions(st, today = dstr()) {
   const open = liveTopics(st).filter((t) => !t.skip && (t.status === 'todo' || t.status === 'doing'));
   const items = open
     .map((t) => {
-      const r = topicRemaining(t, plan.mult.bySubject[t.subject] ?? 1);
+      const r = topicRemaining(t, topicMult(plan.mult, t));
       const value = (t.weightage || 1) * (6 - (t.confidence || 3));
       return { t, r, vpm: value / Math.max(1, r) };
     })
@@ -464,7 +568,7 @@ export function subjectProgress(st) {
       o.estDone += t.estMin || 0;
     }
     if (t.status === 'revised') o.revised += 1;
-    o.remaining += topicRemaining(t, mult.bySubject[t.subject] ?? 1);
+    o.remaining += topicRemaining(t, topicMult(mult, t));
   }
   return Object.values(map).map((o) => ({ ...o, pct: o.est ? Math.round((o.estDone / o.est) * 100) : 0 }));
 }
