@@ -126,6 +126,14 @@ export function startSession({ topicId = null, mode = 'full', text = '' } = {}) 
   S.commit();
 }
 
+/** Quick jot while the timer runs. Saved to the device only (no re-render, so typing never loses focus). */
+export function setRunningNote(text) {
+  const r = st().runtime.running;
+  if (!r) return;
+  r.note = String(text || '').slice(0, 500);
+  S.persist();
+}
+
 export function togglePause() {
   const r = st().runtime.running;
   if (!r) return;
@@ -153,6 +161,7 @@ export function stopSession() {
     mode: r.mode,
     pauses: r.pauses,
     text: r.text,
+    notes: r.note || '',
     manual: false
   };
   s.runtime.running = null;
@@ -210,7 +219,7 @@ export function saveSession(f) {
     logDelaySec: d.manual ? '' : Math.max(0, Math.round((Date.now() - endTs) / 1000)),
     mode: d.mode || 'manual',
     energy,
-    notes: ''
+    notes: String(f.notes ?? d.notes ?? '').trim().slice(0, 500)
   };
   S.put('sessions', row);
   if (topic) applyToTopic(topic, minutes, f, date);
@@ -222,6 +231,16 @@ export function saveSession(f) {
   s.runtime.draft = null;
   S.commit();
   return { minutes, date, capital: E.studyCapital(s) };
+}
+
+/** Add or edit the note on a saved session. */
+export function setSessionNote(id, text) {
+  const row = st().sessions[id];
+  if (!row) return false;
+  row.notes = String(text || '').trim().slice(0, 500);
+  S.put('sessions', row);
+  S.commit();
+  return true;
 }
 
 export function deleteSession(id) {
