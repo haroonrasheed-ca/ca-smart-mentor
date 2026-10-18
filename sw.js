@@ -2,7 +2,7 @@
 // Strategy: stale-while-revalidate for the app shell. Sheet sync calls (cross-origin POST) are never cached.
 // Bump VERSION when you deploy changes so phones pick them up on the next open.
 
-const VERSION = 'v1.0.0';
+const VERSION = 'v1.2.0';
 const CACHE = `ca-mentor-${VERSION}`;
 const SHELL = [
   './',
