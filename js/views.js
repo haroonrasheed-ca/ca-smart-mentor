@@ -345,7 +345,7 @@ export function settingsView(c) {
     <label class="field-l">Weekly rest day<select class="field" name="weeklyRestDay">${opt(-1, 'None', s.weeklyRestDay)}${days.map((d, i) => opt(i, d, s.weeklyRestDay)).join('')}</select></label>
     <label class="field-l">Realistic minutes on a normal office day<input class="field" type="number" name="baselineWeekdayMin" min="15" max="600" value="${s.baselineWeekdayMin}"></label>
     <label class="field-l">Empty-battery (maintenance) minutes<input class="field" type="number" name="maintenanceMin" min="10" max="120" value="${s.maintenanceMin}"></label>
-    <label class="field-l">Minutes that keep a streak day alive<input class="field" type="number" name="minStreakMin" min="5" max="120" value="${s.minStreakMin}"></label>
+    <label class="field-l">Minutes that keep a streak day alive<input class="field" type="number" name="minStreakMin" min="5" max="600" value="${s.minStreakMin}"></label>
     <label class="field-l">Landing-pad rest (minutes)<input class="field" type="number" name="landingPadMin" min="5" max="60" value="${s.landingPadMin}"></label>`)}
   ${card(`<h2>Habit</h2>
     <label class="field-l">Your if-then sentence<input class="field" name="ifThen" maxlength="200" placeholder="If I finish dinner, then I tap START before picking up my phone." value="${esc(s.ifThen)}"></label>
