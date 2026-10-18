@@ -66,16 +66,28 @@ function renderSession(st) {
   }
   sessionEl.hidden = false;
   document.body.classList.add('locked');
+  const ae = document.activeElement;
+  const keep = ae && ae.id === 'run-note' ? [ae.selectionStart, ae.selectionEnd] : null;
   sessionEl.innerHTML = `<div class="session-inner">
     <p class="eyebrow">${r.paused ? 'Paused' : 'In session'}</p>
     <p class="session-text serif">${esc(r.text || 'Focus session')}</p>
     <div id="timer" class="timer" aria-live="off">${fmtClock(A.elapsedMs(r))}</div>
     <p class="muted" id="session-hint">Counting up, no pressure. Stop whenever you like.</p>
+    <label class="field-l run-note-l" for="run-note">Quick note <span class="tiny">(optional, saved with this session)</span>
+      <textarea class="field" id="run-note" rows="2" maxlength="500" placeholder="A page number, a doubt, something to revisit…">${esc(r.note || '')}</textarea>
+    </label>
     <div class="row center">
       <button class="btn" data-act="pause">${r.paused ? 'Resume' : 'Pause'}</button>
       <button class="btn primary big" data-act="stop">Done</button>
     </div>
   </div>`;
+  if (keep) {
+    const n = $('#run-note');
+    if (n) {
+      n.focus({ preventScroll: true });
+      n.setSelectionRange(keep[0], keep[1]);
+    }
+  }
 }
 
 function render() {
@@ -189,6 +201,12 @@ const handlers = {
     closeSheet();
   },
   'manual-log': () => openLog(A.newManualDraft()),
+  'note-edit': (el) => {
+    const st = S.getState();
+    const session = st.sessions[el.dataset.id];
+    if (!session) return;
+    openSheet(Sh.noteSheet({ session, topicName: st.topics[session.topicId]?.name || 'Not on my list' }));
+  },
 
   'tunnel-on': () => A.setTunnel(true),
   'tunnel-off': () => A.setTunnel(false),
@@ -306,6 +324,10 @@ document.addEventListener('change', (e) => {
   }
 });
 
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'run-note') A.setRunningNote(e.target.value);
+});
+
 document.addEventListener('submit', async (e) => {
   const form = e.target.closest('form[data-form]');
   if (!form) return;
@@ -317,6 +339,10 @@ document.addEventListener('submit', async (e) => {
     const res = A.saveSession(obj(fd));
     closeSheet();
     openSheet(Sh.completeSheet(res), { lock: false });
+  } else if (kind === 'note') {
+    A.setSessionNote(fd.get('id'), fd.get('notes'));
+    closeSheet();
+    toast('Note saved.');
   } else if (kind === 'settings') {
     A.saveSettings({ ...obj(fd), nudgesOn: fd.has('nudgesOn') });
     ensurePlan();
