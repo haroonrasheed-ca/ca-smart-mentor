@@ -192,3 +192,40 @@ test('subjectProgress and weeklyStats shape', () => {
   assert.equal(w.slots.evening.min, 40);
   assert.ok(Array.isArray(w.risk));
 });
+
+test('difficulty guide pads estimates until your own speed is measured', () => {
+  const st = makeState({ topics: [topic('e', 'X', 100, { difficulty: 1 }), topic('h', 'X', 100, { difficulty: 5 })] });
+  const rem = E.remainingEffort(st);
+  assert.equal(rem.items.find((i) => i.topic.id === 'e').rem, 100 * 1.0 * 1.3);
+  assert.equal(rem.items.find((i) => i.topic.id === 'h').rem, 100 * 1.5 * 1.3);
+});
+
+test('courseOutlook: total hours, range, toughness, verdict and plan drift', () => {
+  const st = makeState({
+    topics: [topic('a', 'FAR', 300, { difficulty: 5 }), topic('b', 'FAR', 300, { difficulty: 4 }), topic('c', 'Law', 120, { difficulty: 2 })]
+  });
+  const o = E.courseOutlook(st, TODAY);
+  assert.equal(o.topics, 3);
+  assert.equal(o.basis, 'guide');
+  assert.ok(o.lowMin < o.totalMin && o.totalMin < o.highMin);
+  assert.equal(o.subjects[0].subject, 'FAR');
+  assert.equal(o.subjects[0].toughness, 'Very tough');
+  assert.equal(o.subjects[1].toughness, 'Light');
+  assert.equal(o.hardest[0].name, 'a');
+  assert.ok(['comfortable', 'doable', 'stretch', 'unrealistic'].includes(o.verdict));
+  // an ideal line drawn for a much bigger syllabus is flagged
+  const stale = makeState({ topics: [topic('a', 'FAR', 60)], plan: { id: 'p', baselineStart: TODAY, baselineEnd: addDays(TODAY, 59), baselineTotal: 5000 } });
+  const o2 = E.courseOutlook(stale, TODAY);
+  assert.ok(o2.drift && o2.drift.pct < -25);
+  // learned speed replaces the guide and narrows the range
+  const learned = makeState({
+    topics: [
+      topic('a', 'FAR', 100, { status: 'done', firstPassMin: 150, spentMin: 150 }),
+      topic('b', 'FAR', 100, { status: 'done', firstPassMin: 150, spentMin: 150 }),
+      topic('c', 'FAR', 100, { difficulty: 5 })
+    ]
+  });
+  const o3 = E.courseOutlook(learned, TODAY);
+  assert.equal(o3.basis, 'learned');
+  assert.equal(o3.multiplier, 1.5);
+});
