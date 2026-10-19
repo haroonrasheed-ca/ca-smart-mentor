@@ -152,6 +152,66 @@ export function forecastDate(st, today, remaining, vel, factor = 1, maxDays = 73
   return null;
 }
 
+/* ------------------------------------------------------------------ exam dates (one per subject) */
+
+/** The exam date that applies to a subject: its own date, otherwise the default one. */
+export const examDateFor = (settings, subject) => (settings.subjectExams && settings.subjectExams[subject]) || settings.examDate || '';
+
+export const subjectsOf = (st) => [...new Set(liveTopics(st).map((t) => t.subject))].sort();
+
+export const hasAnyExam = (st) => {
+  const s = st.meta.settings;
+  return !!s.examDate || subjectsOf(st).some((x) => s.subjectExams && s.subjectExams[x]);
+};
+
+/**
+ * Subjects that share an exam date form a group. Groups are worked earliest-deadline-first, so the pace you
+ * need is the worst of: (everything due by this exam) / (study days before this exam). With one exam date
+ * this is exactly the old single-deadline maths.
+ */
+export function examGroups(st, today, remBySubject, todayBySubject = {}, todayMin = 0) {
+  const s = st.meta.settings;
+  const buffer = Number(s.revisionBufferDays) || 0;
+  const by = {};
+  for (const subj of subjectsOf(st)) {
+    const exam = examDateFor(s, subj);
+    if (!exam) continue;
+    const g = (by[exam] ||= { examDate: exam, lastDay: addDays(exam, -buffer), subjects: [], rem: 0, startRem: 0 });
+    g.subjects.push(subj);
+    g.rem += remBySubject[subj] || 0;
+    g.startRem += (remBySubject[subj] || 0) + (todayBySubject[subj] || 0);
+  }
+  let groups = Object.values(by).sort((a, b) => (a.examDate < b.examDate ? -1 : a.examDate > b.examDate ? 1 : 0));
+  const upcoming = groups.filter((g) => g.examDate >= today);
+  if (upcoming.length) groups = upcoming; // an exam that has already happened no longer constrains the others
+  const attributed = Object.values(todayBySubject).reduce((a, b) => a + b, 0);
+  const extra = Math.max(0, todayMin - attributed); // minutes logged today against nothing on your list
+  let cumRem = 0;
+  let cumStart = 0;
+  let cumSubjects = [];
+  groups.forEach((g, i) => {
+    cumRem += g.rem;
+    cumStart += g.startRem + (i === groups.length - 1 ? extra : 0);
+    cumSubjects = [...cumSubjects, ...g.subjects];
+    g.cumRem = cumRem;
+    g.cumStart = cumStart;
+    g.cumSubjects = cumSubjects;
+    g.days = diffDays(today, g.lastDay) >= 0 ? effectiveDays(st, today, g.lastDay) : 0;
+    g.pace = g.days > 0 ? g.cumStart / g.days : g.cumStart;
+  });
+  return groups;
+}
+
+/** With several exam dates, topics from the nearest exam get a gentle nudge in "what next". */
+export function subjectUrgency(st, today = dstr()) {
+  const rem = remainingEffort(st);
+  const groups = examGroups(st, today, rem.bySubject).filter((g) => g.rem > 0);
+  const out = {};
+  if (groups.length < 2) return out;
+  groups.forEach((g, i) => g.subjects.forEach((x) => (out[x] = 1 + 0.6 / (i + 1))));
+  return out;
+}
+
 /* ------------------------------------------------------------------ the GPS */
 
 export function computePlan(st, today = dstr()) {
@@ -187,14 +247,28 @@ export function computePlan(st, today = dstr()) {
     idealToday: 0,
     actualToday: 0,
     idealRate: 0,
-    bp: null
+    bp: null,
+    groups: [],
+    bind: null,
+    worst: null,
+    multi: false,
+    unscheduled: []
   };
-  if (!s.examDate) return out;
+  const todayBySubject = {};
+  for (const x of liveSessions(st)) {
+    if (x.date === today && x.topicId && st.topics[x.topicId]) {
+      const sj = st.topics[x.topicId].subject;
+      todayBySubject[sj] = (todayBySubject[sj] || 0) + (x.minutes || 0);
+    }
+  }
+  const groups = examGroups(st, today, rem.bySubject, todayBySubject, todayMin);
+  if (!groups.length) return out;
 
-  const lastDay = addDays(s.examDate, -(Number(s.revisionBufferDays) || 0));
-  const effDays = diffDays(today, lastDay) >= 0 ? effectiveDays(st, today, lastDay) : 0;
+  const bind = groups.reduce((a, g) => (g.pace > a.pace ? g : a), groups[0]);
+  const lastDay = groups[groups.length - 1].lastDay;
+  const effDays = bind.days;
   const startRem = out.startRem;
-  const unitPace = effDays > 0 ? startRem / effDays : startRem;
+  const unitPace = bind.pace;
   const feas = cap.value > 0 ? unitPace / cap.value : Infinity;
   const route = s.route || { mode: 'auto', dailyMin: 0 };
   const fixed = (route.mode === 'balanced' || route.mode === 'light') && route.dailyMin > 0;
@@ -206,7 +280,12 @@ export function computePlan(st, today = dstr()) {
 
   const bp = st.plans?.[st.meta.activePlanId] || null;
   const vel = velocity(st, today, mm, bp ? bp.baselineStart : null);
-  const eta = forecastDate(st, today, rem.total, vel.value);
+  for (const g of groups) g.eta = forecastDate(st, today, g.cumRem, vel.value);
+  const marginOf = (g) => (g.eta ? diffDays(g.eta, g.examDate) : -Infinity);
+  const pool = groups.filter((g) => g.rem > 0);
+  const cand = pool.length ? pool : [groups[groups.length - 1]];
+  const worst = cand.reduce((a, g) => (marginOf(g) < marginOf(a) ? g : a), cand[0]);
+  const eta = worst.eta;
 
   let gapDays = 0;
   let idealY = 0;
@@ -232,12 +311,24 @@ export function computePlan(st, today = dstr()) {
   else if (gapDays <= -1) status = 'ahead';
   else if (gapDays < 1.5) status = 'on_track';
   else status = 'behind';
+  // with several exams, one close exam can be at risk even while the overall line looks fine
+  if (groups.length > 1 && (status === 'on_track' || status === 'ahead')) {
+    if (groups.some((g) => g.rem > 0 && (g.eta === null || diffDays(g.lastDay, g.eta) >= 1))) status = 'behind';
+  }
+  const scheduled = new Set(groups.flatMap((g) => g.subjects));
+  const unscheduled = subjectsOf(st).filter((x) => !scheduled.has(x) && (rem.bySubject[x] || 0) > 0);
 
   return {
     ...out,
     status,
     lastDay,
-    daysToExam: diffDays(today, s.examDate),
+    examDate: worst.examDate,
+    groups: groups.map((g) => ({ examDate: g.examDate, lastDay: g.lastDay, subjects: g.subjects, rem: g.rem, cumRem: g.cumRem, days: g.days, pace: g.pace, eta: g.eta })),
+    bind: { subjects: bind.cumSubjects, rem: bind.cumStart, days: bind.days, lastDay: bind.lastDay, examDate: bind.examDate },
+    worst: { subjects: worst.subjects, examDate: worst.examDate, eta: worst.eta, margin: worst.eta ? diffDays(worst.eta, worst.examDate) : null },
+    multi: groups.length > 1,
+    unscheduled,
+    daysToExam: diffDays(today, groups[0].examDate),
     effDays,
     unitPace,
     unitTarget,
@@ -297,7 +388,8 @@ export function courseOutlook(st, today = dstr()) {
     .map((o) => {
       const d = o.dW ? o.dSum / o.dW : 3;
       const tot = o.spent + o.remaining;
-      return { subject: o.subject, topics: o.topics, spentMin: Math.round(o.spent), remainingMin: Math.round(o.remaining), totalMin: Math.round(tot), share: total ? Math.round((tot / total) * 100) : 0, difficulty: Math.round(d * 10) / 10, toughness: toughnessLabel(d), learned: o.learned };
+      const exam = examDateFor(st.meta.settings, o.subject);
+      return { subject: o.subject, exam, daysToExam: exam ? diffDays(today, exam) : null, topics: o.topics, spentMin: Math.round(o.spent), remainingMin: Math.round(o.remaining), totalMin: Math.round(tot), share: total ? Math.round((tot / total) * 100) : 0, difficulty: Math.round(d * 10) / 10, toughness: toughnessLabel(d), learned: o.learned };
     })
     .sort((a, b) => b.totalMin - a.totalMin);
   const avgD = dW ? dSum / dW : 3;
@@ -342,7 +434,10 @@ export function courseOutlook(st, today = dstr()) {
     capacitySource: plan.capacity.source,
     needPerDay: Math.round(plan.unitPace),
     feasibility: f,
-    daysLeft: plan.effDays,
+    daysLeft: plan.bind ? plan.bind.days : plan.effDays,
+    exams: plan.groups,
+    multi: plan.multi,
+    unscheduled: plan.unscheduled,
     etaAtCapacity: remaining > 0 && cap > 0 ? forecastDate(st, today, remaining, cap) : null,
     examDate: plan.examDate,
     drift
@@ -362,9 +457,10 @@ export function modeTarget(plan, settings, energy) {
 export function paceSeries(st, today = dstr()) {
   const s = st.meta.settings;
   const bp = st.plans?.[st.meta.activePlanId];
-  if (!bp || !s.examDate) return null;
   const mm = minutesMap(st);
   const plan = computePlan(st, today);
+  if (!bp || !plan.groups.length) return null;
+  const lastExam = plan.groups[plan.groups.length - 1].examDate;
   const start = bp.baselineStart;
   const ideal = [
     { d: start, y: 0 },
@@ -388,11 +484,11 @@ export function paceSeries(st, today = dstr()) {
         break;
       }
       pts.push({ d, y });
-      if (diffDays(s.examDate, d) > 14) break;
+      if (diffDays(lastExam, d) > 14) break;
     }
     return pts;
   };
-  return { start, today, exam: s.examDate, endIdeal: bp.baselineEnd, total: bp.baselineTotal, scope, ideal, actual, forecast: mk(1), lo: mk(0.7), hi: mk(1.3) };
+  return { start, today, exam: lastExam, exams: plan.groups.map((g) => ({ d: g.examDate, subjects: g.subjects })), endIdeal: bp.baselineEnd, total: bp.baselineTotal, scope, ideal, actual, forecast: mk(1), lo: mk(0.7), hi: mk(1.3) };
 }
 
 /* ------------------------------------------------------------------ route options */
@@ -400,9 +496,16 @@ export function paceSeries(st, today = dstr()) {
 export function routeOptions(st, today = dstr()) {
   const plan = computePlan(st, today);
   const cap = plan.capacity.value;
+  const bind = plan.bind || { subjects: [], rem: plan.startRem, days: plan.effDays };
   const fixedOpt = (id, label, dailyMin, desc) => {
     const eta = forecastDate(st, today, plan.remaining, dailyMin);
-    const covered = plan.effDays > 0 ? Math.min(1, (dailyMin * plan.effDays) / Math.max(1, plan.startRem)) : 0;
+    const covered = bind.days > 0 ? Math.min(1, (dailyMin * bind.days) / Math.max(1, bind.rem)) : 0;
+    let late = null;
+    for (const g of plan.groups) {
+      const ge = forecastDate(st, today, g.cumRem, dailyMin);
+      if (!ge) { late = null; break; }
+      late = Math.max(late ?? 0, Math.max(0, diffDays(g.examDate, ge)));
+    }
     return {
       id,
       label,
@@ -410,14 +513,15 @@ export function routeOptions(st, today = dstr()) {
       dailyMin,
       eta,
       coveredPct: Math.round(covered * 100),
-      lateByDays: eta && plan.examDate ? Math.max(0, diffDays(plan.examDate, eta)) : null
+      lateByDays: eta && plan.examDate ? late : null
     };
   };
   const balanced = fixedOpt('balanced', 'Balanced', round5(cap * BALANCED_FACTOR), 'A modest step up from what you already manage.');
   const light = fixedOpt('light', 'Light', round5(cap), 'Exactly your demonstrated pace. Finish date moves later.');
 
   // Triage: drop the lowest "marks per minute" topics until the pace is realistic.
-  const open = liveTopics(st).filter((t) => !t.skip && (t.status === 'todo' || t.status === 'doing'));
+  const inScope = new Set(bind.subjects);
+  const open = liveTopics(st).filter((t) => !t.skip && (t.status === 'todo' || t.status === 'doing') && (!inScope.size || inScope.has(t.subject)));
   const items = open
     .map((t) => {
       const r = topicRemaining(t, topicMult(plan.mult, t));
@@ -425,8 +529,8 @@ export function routeOptions(st, today = dstr()) {
       return { t, r, vpm: value / Math.max(1, r) };
     })
     .sort((a, b) => a.vpm - b.vpm);
-  const affordable = cap * BALANCED_FACTOR * Math.max(1, plan.effDays);
-  let total = plan.startRem;
+  const affordable = cap * BALANCED_FACTOR * Math.max(1, bind.days);
+  let total = bind.rem;
   let skipped = 0;
   const skipIds = [];
   const maxSkip = total * 0.4;
@@ -446,7 +550,7 @@ export function routeOptions(st, today = dstr()) {
     skipIds,
     skippedMin: Math.round(skipped),
     marksKeptPct: Math.round(((allOpenW - skippedW) / allOpenW) * 100),
-    dailyMin: round5(total / Math.max(1, plan.effDays))
+    dailyMin: round5(total / Math.max(1, bind.days))
   };
   const restructure = { id: 'restructure', label: 'Restructure', desc: 'Clean slate: archive the old plan and rebuild from your real capacity.' };
   return [balanced, light, triage, restructure];
@@ -499,7 +603,9 @@ export function pickNextMicro(st, today, pref = {}, energy = '') {
   const exclude = new Set(pref.exclude || []);
   const pool = liveTopics(st).filter((t) => !t.skip && t.status !== 'revised' && !exclude.has(t.id));
   if (!pool.length) return null;
-  const rank = (arr) => [...arr].sort((a, b) => topicPriority(b, today) - topicPriority(a, today));
+  const urg = subjectUrgency(st, today);
+  const pr = (t) => topicPriority(t, today) * (urg[t.subject] || 1);
+  const rank = (arr) => [...arr].sort((a, b) => pr(b) - pr(a));
   const by = (status) => pool.filter((t) => t.status === status);
   let cand;
   if (pref.hard) {
