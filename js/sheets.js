@@ -140,8 +140,8 @@ export function topicSheet({ topic }) {
 export function importSheet() {
   return `<form data-form="import" class="sheet-form">${close}
     <h2 class="serif">Import topics</h2>
-    <p class="muted">Paste CSV with these columns (header row optional):<br><code>subject, chapter, name, estMin, weightage, difficulty</code></p>
-    <textarea class="field" name="csv" rows="9" placeholder="FAR,Leases,IFRS 16 Leases,210,8,4"></textarea>
+    <p class="muted">Paste CSV with these columns (header row optional):<br><code>subject, chapter, name, estMin, weightage, difficulty</code><br>Optional last two columns: <code>status</code> (todo, doing, done, revised) and <code>confidence</code> (1-5). Handy if you are already mid-way.</p>
+    <textarea class="field" name="csv" rows="9" placeholder="FAR,Leases,IFRS 16 Leases,210,8,4,done,3"></textarea>
     <div class="row"><button class="btn primary" type="submit">Import</button></div>
   </form>`;
 }
