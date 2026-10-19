@@ -2,6 +2,10 @@
 //  - The app works fully offline; edits are queued in `dirty` and pushed when online.
 //  - Writes use POST with Content-Type text/plain so the browser skips the CORS preflight Apps Script can't answer.
 //  - Conflict rule: last write wins, decided by each row's `updatedAt`.
+//  - Settings are the exception: they follow the newest SAVE of the settings (`meta.settingsAt`), so every device
+//    you connect to the same Sheet ends up with the same settings, and a device that merely rolled over a day
+//    can never overwrite them. The colour theme stays per device.
+//  - The first time a device connects to a Sheet that already has data, it adopts the Sheet (or asks you).
 
 import * as S from './store.js';
 import { debounce } from './utils.js';
@@ -92,21 +96,115 @@ export async function pull() {
     }
   }
   const m = (res.tables?.meta || []).find((r) => r.id === 'main');
-  if (m && m.data && (m.updatedAt || 0) > (s.metaUpdatedAt || 0)) {
-    s.meta = { ...s.meta, ...m.data, settings: { ...s.meta.settings, ...(m.data.settings || {}) }, streak: { ...s.meta.streak, ...(m.data.streak || {}) } };
-    s.metaUpdatedAt = m.updatedAt;
-    s.dirty.meta = 0;
-    merged++;
+  if (m && m.data && mergeRemoteMeta(s, m)) merged++;
+  s.runtime.lastPullTs = res.serverTs || Date.now();
+  if (merged) S.commit();
+  else S.persist();
+  return merged;
+}
+
+/**
+ * Merge the Sheet's meta row into this device. Field by field, so no device can undo another:
+ *  - settings: the newest save wins (theme stays as it is on this device)
+ *  - streak: whichever device has processed more days
+ *  - active plan: follow the newer daily snapshot
+ */
+export function mergeRemoteMeta(s, m) {
+  const rd = m.data || {};
+  let changed = false;
+  const rs = rd.settingsAt || 0;
+  const ls = s.meta.settingsAt || 0;
+  const legacy = rs === 0 && ls === 0 && (m.updatedAt || 0) > (s.metaUpdatedAt || 0); // sheets written before settingsAt existed
+  if (rd.settings && (rs > ls || legacy)) {
+    s.meta.settings = { ...s.meta.settings, ...rd.settings, theme: s.meta.settings.theme };
+    s.meta.settingsAt = rs;
+    changed = true;
   }
+  if (rd.streak && (rd.streak.lastProcessed || '') > (s.meta.streak.lastProcessed || '')) {
+    s.meta.streak = { ...s.meta.streak, ...rd.streak };
+    changed = true;
+  }
+  if (rd.activePlanId && (rd.lastSnapshotDate || '') > (s.meta.lastSnapshotDate || '')) {
+    s.meta.activePlanId = rd.activePlanId;
+    s.meta.lastSnapshotDate = rd.lastSnapshotDate;
+    changed = true;
+  }
+  if ((m.updatedAt || 0) > (s.metaUpdatedAt || 0)) s.metaUpdatedAt = m.updatedAt;
+  if (s.dirty.meta) s.metaUpdatedAt = Math.max(s.metaUpdatedAt || 0, Date.now()); // our merged copy must be accepted by the Sheet
+  return changed;
+}
+
+/** Replace everything on this device with what the Sheet holds (used when a new device joins an existing Sheet). */
+export function adoptRemote(res) {
+  const s = S.getState();
+  for (const t of S.TABLES) {
+    s[t] = {};
+    s.dirty[t] = {};
+    for (const r of res.tables?.[t] || []) s[t][r.id] = { ...r, deleted: !!r.deleted };
+  }
+  const m = (res.tables?.meta || []).find((r) => r.id === 'main');
+  if (m && m.data) {
+    const theme = s.meta.settings.theme;
+    s.meta = {
+      ...s.meta,
+      ...m.data,
+      settings: { ...s.meta.settings, ...(m.data.settings || {}), theme },
+      streak: { ...s.meta.streak, ...(m.data.streak || {}) },
+      settingsAt: m.data.settingsAt || 0
+    };
+    s.metaUpdatedAt = m.updatedAt || Date.now();
+  }
+  s.dirty.meta = 0;
+  s.runtime.micro = null;
   s.runtime.lastPullTs = res.serverTs || Date.now();
   S.commit();
-  return merged;
+}
+
+let firstChoice = null; // the Sheet's data, held while the person decides what to keep
+export const isAsking = () => !!firstChoice;
+
+/** First sync from this device: look at the Sheet before sending anything. */
+async function firstSync() {
+  const res = await call('pull', { since: 0 });
+  const s = S.getState();
+  const live = (t) => (res.tables?.[t] || []).filter((r) => !r.deleted);
+  const rm = (res.tables?.meta || []).find((r) => r.id === 'main');
+  const remoteHas = live('topics').length + live('sessions').length > 0 || !!(rm && rm.data && rm.data.settings && rm.data.settings.onboarded);
+  const localHas = Object.values(s.topics).some((t) => !t.deleted) || Object.values(s.sessions).some((x) => !x.deleted);
+  if (!remoteHas) {
+    S.markAllDirty(); // an empty Sheet: this device becomes its first source
+    const sent = await push();
+    await pull();
+    return { mode: 'pushed', sent };
+  }
+  if (!localHas) {
+    adoptRemote(res); // a new device joining: take the Sheet's settings and data, send nothing
+    return { mode: 'adopted' };
+  }
+  firstChoice = res; // both sides have data: never guess, ask
+  return { mode: 'ask' };
+}
+
+/** The person chose "use the Sheet's data" on a device that already had data of its own. */
+export function useSheetData() {
+  if (!firstChoice) return false;
+  adoptRemote(firstChoice);
+  firstChoice = null;
+  const last = Date.now();
+  localStorage.setItem('ca-mentor:lastSync', String(last));
+  set({ state: 'ok', msg: 'Connected. Settings and data now come from your Sheet.', last });
+  return true;
+}
+
+export function dropFirstChoice() {
+  firstChoice = null;
+  set({ state: 'idle', msg: '' });
 }
 
 let busy = false;
 export async function syncNow(quiet = false) {
   if (!isConfigured()) return;
-  if (busy) return;
+  if (busy || firstChoice) return;
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     set({ state: 'offline', msg: 'Offline. Changes are saved on this device and will sync later.' });
     return;
@@ -114,8 +212,20 @@ export async function syncNow(quiet = false) {
   busy = true;
   set({ state: 'syncing', msg: 'Syncing…' });
   try {
-    const pushed = await push();
+    if (!S.getState().runtime.lastPullTs) {
+      const r = await firstSync();
+      if (r.mode === 'ask') {
+        set({ state: 'ask', msg: 'This Sheet already has data. Choose which to keep.' });
+        return;
+      }
+      const last = Date.now();
+      localStorage.setItem('ca-mentor:lastSync', String(last));
+      set({ state: 'ok', msg: r.mode === 'adopted' ? 'Connected. Your settings and data came from the Sheet.' : `Connected. Sent ${r.sent}.`, last });
+      return;
+    }
+    // pull first: merge what other devices did, then send the merged result (so stale data can never overwrite newer)
     const pulled = await pull();
+    const pushed = await push();
     const last = Date.now();
     localStorage.setItem('ca-mentor:lastSync', String(last));
     set({ state: 'ok', msg: quiet ? '' : `Synced. Sent ${pushed}, received ${pulled}.`, last });
@@ -133,5 +243,14 @@ export function init() {
     if (isConfigured() && S.dirtyCount() > 0) schedule();
   });
   window.addEventListener('online', () => syncNow(true));
+  if (typeof document !== 'undefined') {
+    // two devices at once: pick up the other one's changes whenever this app is looked at again, and every minute
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') syncNow(true);
+    });
+    setInterval(() => {
+      if (document.visibilityState === 'visible') syncNow(true);
+    }, 60000);
+  }
   if (isConfigured()) syncNow(true);
 }
