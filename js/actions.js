@@ -429,6 +429,16 @@ export function deleteTopic(id) {
   S.commit();
 }
 
+/** Optional 7th and 8th columns: status (todo / doing / done / revised) and confidence (1-5). */
+const importStatus = (v) => {
+  const x = String(v || '').trim().toLowerCase();
+  if (!x) return 'todo';
+  if (x.startsWith('rev')) return 'revised';
+  if (x.includes('progress') || x.startsWith('doing') || x.startsWith('start')) return 'doing';
+  if (x.includes('done') || x.startsWith('first') || x.startsWith('complete')) return 'done';
+  return 'todo';
+};
+
 export function importTopicsCSV(text) {
   const s = st();
   const rows = parseCSV(text);
@@ -436,11 +446,12 @@ export function importTopicsCSV(text) {
   const have = new Set(E.liveTopics(s).map((t) => `${t.subject}|${t.name}`.toLowerCase()));
   let added = 0;
   for (const r of rows) {
-    const [subject, chapter, name, estMin, weightage, difficulty] = r.map((x) => x.trim());
+    const [subject, chapter, name, estMin, weightage, difficulty, status, confidence] = r.map((x) => x.trim());
     if (!subject || !name) continue;
     const key = `${subject}|${name}`.toLowerCase();
     if (have.has(key)) continue;
     have.add(key);
+    const stat = importStatus(status);
     S.put('topics', {
       id: uid('t_'),
       subject,
@@ -449,11 +460,11 @@ export function importTopicsCSV(text) {
       estMin: Math.max(5, Number(estMin) || 60),
       weightage: Math.max(0, Number(weightage) || 5),
       difficulty: clamp(Number(difficulty) || 3, 1, 5),
-      confidence: 3,
-      status: 'todo',
+      confidence: clamp(Number(confidence) || 3, 1, 5),
+      status: stat,
       spentMin: 0,
       firstPassMin: 0,
-      revisionCount: 0,
+      revisionCount: stat === 'revised' ? 1 : 0,
       lastTouched: '',
       skip: false
     });
