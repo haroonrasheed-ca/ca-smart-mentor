@@ -229,3 +229,83 @@ test('courseOutlook: total hours, range, toughness, verdict and plan drift', () 
   assert.equal(o3.basis, 'learned');
   assert.equal(o3.multiplier, 1.5);
 });
+
+/* ---------------- one exam date per subject ---------------- */
+import * as M from '../js/mentor.js';
+
+const two = (over = {}) =>
+  makeState({
+    examDate: '',
+    settings: { subjectExams: { AAFR: addDays(TODAY, 30), BFD: addDays(TODAY, 60) }, ...over.settings },
+    topics: over.topics || [topic('a1', 'AAFR', 6000), topic('b1', 'BFD', 3000)]
+  });
+
+test('examDateFor: a subject uses its own date, else the default', () => {
+  const s = { examDate: '2026-12-01', subjectExams: { AAFR: '2026-11-20' } };
+  assert.equal(E.examDateFor(s, 'AAFR'), '2026-11-20');
+  assert.equal(E.examDateFor(s, 'BFD'), '2026-12-01');
+  assert.equal(E.examDateFor({ examDate: '' }, 'BFD'), '');
+});
+
+test('several exams: the pace is the worst of the deadlines, and the nearest exam can be the binding one', () => {
+  const st = two();
+  const plan = E.computePlan(st, TODAY);
+  assert.equal(plan.multi, true);
+  assert.equal(plan.groups.length, 2);
+  // AAFR remaining 6000*1.2*1.3 = 9360 over 31 days (today..exam), both together 14040 over 61 days
+  assert.ok(Math.abs(plan.groups[0].pace - 9360 / 31) < 0.01);
+  assert.ok(Math.abs(plan.groups[1].pace - 14040 / 61) < 0.01);
+  assert.deepEqual(plan.bind.subjects, ['AAFR']);
+  assert.ok(Math.abs(plan.unitPace - 9360 / 31) < 0.01);
+  assert.equal(plan.lastDay, addDays(TODAY, 60), 'ideal line runs to the last exam');
+  assert.equal(plan.status, 'needs_route');
+});
+
+test('several exams: the headline names the subject at risk', () => {
+  const plan = E.computePlan(two(), TODAY);
+  assert.deepEqual(plan.worst.subjects, ['AAFR']);
+  assert.match(M.headline(plan), /AAFR/);
+  assert.match(M.headline(plan), /after its exam|far out|before its exam|exam day/);
+});
+
+test('one subject with no date is left out of the schedule and flagged', () => {
+  const st = makeState({ examDate: '', settings: { subjectExams: { AAFR: addDays(TODAY, 40) } }, topics: [topic('a1', 'AAFR', 600), topic('b1', 'BFD', 600)] });
+  assert.equal(E.hasAnyExam(st), true);
+  const plan = E.computePlan(st, TODAY);
+  assert.notEqual(plan.status, 'setup');
+  assert.deepEqual(plan.unscheduled, ['BFD']);
+  assert.equal(E.computePlan(makeState({ examDate: '', topics: [topic('a1', 'AAFR', 600)] }), TODAY).status, 'setup');
+});
+
+test('an exam that has already happened no longer constrains the others', () => {
+  const st = makeState({ examDate: '', settings: { subjectExams: { AAFR: addDays(TODAY, -3), BFD: addDays(TODAY, 40) } }, topics: [topic('a1', 'AAFR', 600), topic('b1', 'BFD', 600)] });
+  const plan = E.computePlan(st, TODAY);
+  assert.equal(plan.groups.length, 1);
+  assert.deepEqual(plan.groups[0].subjects, ['BFD']);
+});
+
+test('triage only parks topics that matter for the binding exam', () => {
+  const st = two({ topics: [topic('a1', 'AAFR', 3000), topic('a2', 'AAFR', 3000, { weightage: 1 }), topic('b1', 'BFD', 3000, { weightage: 1 })] });
+  const tri = E.routeOptions(st, TODAY).find((o) => o.id === 'triage');
+  assert.ok(tri.skipIds.every((id) => st.topics[id].subject === 'AAFR'), 'only AAFR topics are parked');
+});
+
+test('what-next leans to the subject whose exam is nearer', () => {
+  const st = two({ topics: [topic('b1', 'BFD', 600), topic('a1', 'AAFR', 600)] });
+  assert.equal(E.pickNextMicro(st, TODAY).topicId, 'a1');
+  const flipped = two({ settings: { subjectExams: { AAFR: addDays(TODAY, 60), BFD: addDays(TODAY, 30) } }, topics: [topic('b1', 'BFD', 600), topic('a1', 'AAFR', 600)] });
+  assert.equal(E.pickNextMicro(flipped, TODAY).topicId, 'b1');
+});
+
+test('outlook lists each subject with its own exam', () => {
+  const o = E.courseOutlook(two(), TODAY);
+  assert.equal(o.multi, true);
+  assert.equal(o.subjects.find((x) => x.subject === 'AAFR').exam, addDays(TODAY, 30));
+  assert.equal(o.subjects.find((x) => x.subject === 'BFD').daysToExam, 60);
+  const series = E.paceSeries(
+    makeState({ examDate: '', settings: { subjectExams: { AAFR: addDays(TODAY, 30), BFD: addDays(TODAY, 60) } }, topics: [topic('a1', 'AAFR', 600), topic('b1', 'BFD', 600)], plan: { id: 'p', baselineStart: TODAY, baselineEnd: addDays(TODAY, 60), baselineTotal: 1560 } }),
+    TODAY
+  );
+  assert.equal(series.exams.length, 2);
+  assert.equal(series.exam, addDays(TODAY, 60));
+});
