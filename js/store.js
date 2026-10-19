@@ -9,7 +9,8 @@ export const TABLES = ['topics', 'sessions', 'days', 'plans', 'events'];
 
 export const DEFAULT_SETTINGS = {
   onboarded: false,
-  examDate: '',
+  examDate: '', // default exam date, used by any subject that has no date of its own
+  subjectExams: {}, // { subjectName: 'YYYY-MM-DD' }: each subject can have its own exam date
   revisionBufferDays: 7, // final days kept free of new syllabus
   weeklyRestDay: -1, // 0=Sun … 6=Sat, -1 = none
   baselineWeekdayMin: 90, // realistic minutes on a normal office day
@@ -33,7 +34,8 @@ function fresh() {
       settings: { ...DEFAULT_SETTINGS },
       streak: { current: 0, best: 0, missRun: 0, shields: 1, maintenanceDays: 0, totalDays: 0, lastProcessed: addDays(t, -1), lastReset: 0 },
       activePlanId: null,
-      lastSnapshotDate: ''
+      lastSnapshotDate: '',
+      settingsAt: 0 // when the settings were last saved on ANY device (settings follow the newest save)
     },
     metaUpdatedAt: 0,
     topics: {},
@@ -112,6 +114,13 @@ export function remove(table, id) {
 export function touchMeta() {
   state.metaUpdatedAt = Date.now();
   state.dirty.meta = 1;
+}
+
+/** Call whenever the person changes a setting. Only this moves the settings forward in time, so a device that merely
+ *  rolled over a day can never overwrite settings you saved on another device. */
+export function touchSettings() {
+  state.meta.settingsAt = Date.now();
+  touchMeta();
 }
 
 export function logEvent(type, payload = {}) {
