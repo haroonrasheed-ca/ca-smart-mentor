@@ -1,7 +1,7 @@
 // Trajectory Reality Check: Ideal vs Actual vs Forecast (with an honest ±30% band), drawn as inline SVG.
 // No chart library on purpose — works offline, themes via CSS variables.
 
-import { addDays, diffDays, fmtDate } from './utils.js';
+import { addDays, diffDays, fmtDate, esc } from './utils.js';
 
 export function paceChart(sr) {
   if (!sr) return '';
@@ -41,7 +41,11 @@ export function paceChart(sr) {
   ${grid}
   <line class="ch-scope" x1="${m.l}" x2="${W - m.r}" y1="${sy(sr.scope)}" y2="${sy(sr.scope)}"/>
   <line class="ch-exam" x1="${sx(sr.exam)}" x2="${sx(sr.exam)}" y1="${m.t}" y2="${H - m.b}"/>
-  <text class="ch-text ch-exam-label" x="${sx(sr.exam) - 6}" y="${m.t + 10}" text-anchor="end">Exam</text>
+  <text class="ch-text ch-exam-label" x="${sx(sr.exam) - 6}" y="${m.t + 10}" text-anchor="end">${sr.exams && sr.exams.length > 1 ? esc(sr.exams[sr.exams.length - 1].subjects.join(' + ')) : 'Exam'}</text>
+  ${(sr.exams || [])
+    .slice(0, -1)
+    .map((e, i) => `<line class="ch-exam" x1="${sx(e.d)}" x2="${sx(e.d)}" y1="${m.t}" y2="${H - m.b}"/><text class="ch-text ch-exam-label" x="${sx(e.d) - 6}" y="${m.t + 10 + 12 * (i + 1)}" text-anchor="end">${esc(e.subjects.join(' + '))}</text>`)
+    .join('')}
   ${band}
   <path class="ch-ideal" d="${path(sr.ideal)}"/>
   <path class="ch-forecast" d="${path(sr.forecast)}"/>
