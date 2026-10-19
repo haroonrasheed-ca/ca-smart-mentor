@@ -290,3 +290,21 @@ test('notes: jot while the timer runs, edit after saving, shown on Today and Pac
   assert.match(V.paceView(ctx()), /Edited note/);
   assert.match(Sh.noteSheet({ session: row, topicName: 'X' }), /<textarea/);
 });
+
+
+test('import: optional status and confidence columns for students who are mid-way', () => {
+  const before = E.liveTopics(S.getState()).length;
+  const n = A.importTopicsCSV('subject,chapter,name,estMin,weightage,difficulty,status,confidence\nMID,Lectures 1-3,Mid chapter A,270,10,4,done,2\nMID,Lectures 4-5,Mid chapter B,180,10,3,In progress,\nMID,Lectures 6,Mid chapter C,90,10,3,revised,5\nMID,Lectures 7,Mid chapter D,90,10,3');
+  assert.equal(n, 4);
+  const mine = E.liveTopics(S.getState()).filter((t) => t.subject === 'MID');
+  assert.equal(E.liveTopics(S.getState()).length, before + 4);
+  const by = (name) => mine.find((t) => t.name === name);
+  assert.equal(by('Mid chapter A').status, 'done');
+  assert.equal(by('Mid chapter A').confidence, 2);
+  assert.equal(by('Mid chapter B').status, 'doing');
+  assert.equal(by('Mid chapter C').status, 'revised');
+  assert.equal(by('Mid chapter C').revisionCount, 1);
+  assert.equal(by('Mid chapter D').status, 'todo');
+  assert.equal(by('Mid chapter D').confidence, 3);
+  assert.match(Sh.importSheet(), /status/);
+});
