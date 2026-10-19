@@ -229,7 +229,19 @@ const handlers = {
     openSheet(Sh.bankruptcySheet({ st: c.st, plan: c.plan, recent: A.recentBankruptcy() }), { lock: false });
   },
 
-  'onboard-open': () => openSheet(Sh.onboardSheet({ st: S.getState() })),
+  'onboard-open': () => openSheet(Sh.onboardSheet({ st: S.getState() }), { lock: !S.getState().meta.settings.onboarded }),
+  'connect-open': () => openSheet(Sh.connectSheet({ conn: S.getConn() }), { lock: !S.getState().meta.settings.onboarded }),
+  'first-use-sheet': () => {
+    Sync.useSheetData();
+    closeSheet();
+    toast('Done. This device now follows your Sheet.');
+  },
+  'first-cancel': () => {
+    Sync.dropFirstChoice();
+    S.setConn({ url: '', token: '' });
+    closeSheet();
+    toast('Not connected. This device keeps its own data.');
+  },
   'topic-new': () => openSheet(Sh.topicSheet({ topic: null })),
   'topic-edit': (el) => openSheet(Sh.topicSheet({ topic: S.getState().topics[el.dataset.id] })),
   'topic-delete': (el) => {
@@ -350,27 +362,37 @@ document.addEventListener('submit', async (e) => {
   } else if (kind === 'conn') {
     const url = String(fd.get('url') || '').trim();
     const token = String(fd.get('token') || '').trim();
+    const fromSheet = !!sheetEl.querySelector('form[data-form="conn"]');
     S.setConn({ url, token });
     if (!url) return toast('Connection cleared.');
     try {
       await Sync.test();
-      if (!S.getState().runtime.lastPullTs) S.markAllDirty();
       await Sync.syncNow();
-      toast(Sync.getStatus().state === 'ok' ? 'Connected. Your sheet is now your backup.' : Sync.getStatus().msg);
+      const status = Sync.getStatus();
+      if (status.state === 'ask') return; // the "keep the Sheet or this device?" sheet opens by itself
+      if (fromSheet) {
+        closeSheet();
+        if (!S.getState().meta.settings.onboarded) openSheet(Sh.onboardSheet({ st: S.getState() }), { lock: true });
+      }
+      toast(status.state === 'ok' ? status.msg || 'Connected. Your sheet is now your backup.' : status.msg, 5000);
     } catch (err) {
       toast(err.message, 5000);
       const el = $('#sync-status');
       if (el) el.textContent = err.message;
     }
   } else if (kind === 'topic') {
+    const before = A.subjectList();
     A.saveTopic({ ...obj(fd), skip: fd.has('skip') });
     ensurePlan();
     closeSheet();
+    const note = A.newSubjectNote(before);
+    if (note) toast(note.trim(), 6000);
   } else if (kind === 'import') {
+    const before = A.subjectList();
     const n = A.importTopicsCSV(String(fd.get('csv') || ''));
     ensurePlan();
     closeSheet();
-    toast(n ? `Imported ${n} topics.` : 'No new topics found in that text.');
+    toast(n ? `Imported ${n} topics.${A.newSubjectNote(before)}` : 'No new topics found in that text.', n ? 7000 : undefined);
   } else if (kind === 'bankrupt') {
     A.bankruptcy({ examDate: fd.get('examDate'), weekdayMin: fd.get('weekdayMin'), skipIds: fd.getAll('skip') });
     closeSheet();
@@ -443,7 +465,8 @@ setInterval(() => {
 
 A.ensureToday();
 Sync.init();
-Sync.onStatus(() => {
+Sync.onStatus((st) => {
+  if (st.state === 'ask' && Sync.isAsking()) openSheet(Sh.firstConnectSheet(), { lock: true });
   topEl.innerHTML = V.topBar(ctx());
   const el = $('#sync-status');
   const s = Sync.getStatus();
