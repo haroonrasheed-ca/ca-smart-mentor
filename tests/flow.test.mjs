@@ -308,3 +308,36 @@ test('import: optional status and confidence columns for students who are mid-wa
   assert.equal(by('Mid chapter D').confidence, 3);
   assert.match(Sh.importSheet(), /status/);
 });
+
+test('per-subject exam dates: every subject gets its own field in Settings, and a new subject adds one', () => {
+  A.importTopicsCSV('subject,chapter,name,estMin,weightage,difficulty\nAAFR,c,AAFR topic one,300,10,3\nBFD,c,BFD topic one,300,10,3');
+  let html = V.settingsView(ctx());
+  clean(html, 'settings');
+  assert.match(html, /name="exam:AAFR"/);
+  assert.match(html, /name="exam:BFD"/);
+  assert.match(html, /Default exam date/);
+  const before = A.subjectList();
+  A.saveTopic({ subject: 'NEWSUBJ', chapter: '', name: 'Brand new topic', estMin: 120, weightage: 5, difficulty: 3, confidence: 3, status: 'todo' });
+  assert.match(A.newSubjectNote(before), /New subject: NEWSUBJ/);
+  assert.match(V.settingsView(ctx()), /name="exam:NEWSUBJ"/);
+  assert.match(V.topicsView(ctx()), /default date/);
+
+  const aafr = addDays(today, 40);
+  const bfd = addDays(today, 70);
+  A.saveSettings({ 'exam:AAFR': aafr, 'exam:BFD': bfd, 'exam:NEWSUBJ': '' });
+  const set = S.getState().meta.settings;
+  assert.equal(set.subjectExams.AAFR, aafr);
+  assert.equal(set.subjectExams.BFD, bfd);
+  assert.equal(set.subjectExams.NEWSUBJ, undefined);
+  const plan = E.computePlan(S.getState(), today);
+  assert.equal(plan.multi, true);
+  assert.ok(plan.groups.length >= 2);
+  const topics = V.topicsView(ctx());
+  clean(topics, 'topics');
+  assert.match(topics, /Exam .* days left/);
+  clean(V.paceView(ctx()), 'pace');
+  clean(V.todayView(ctx()), 'today');
+  // clearing a date falls back to the default
+  A.saveSettings({ 'exam:BFD': '' });
+  assert.equal(E.examDateFor(S.getState().meta.settings, 'BFD'), S.getState().meta.settings.examDate);
+});
