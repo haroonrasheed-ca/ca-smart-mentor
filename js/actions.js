@@ -62,7 +62,7 @@ export function snapshotPlan(reason, baseline = false) {
     remainingMin: Math.round(p.remaining),
     targetMin: Math.round(p.unitTarget),
     eta: p.etaDate || '',
-    examDate: s.meta.settings.examDate,
+    examDate: p.groups && p.groups.length ? p.groups[p.groups.length - 1].examDate : s.meta.settings.examDate,
     effectiveDays: p.effDays,
     baselineStart: fresh ? today : prev.baselineStart,
     baselineEnd: fresh ? p.lastDay || s.meta.settings.examDate : prev.baselineEnd,
@@ -97,7 +97,7 @@ export function ensureToday() {
     changed = true;
   }
 
-  if (set.examDate && s.meta.lastSnapshotDate !== today && Object.keys(s.topics).length) {
+  if (E.hasAnyExam(s) && s.meta.lastSnapshotDate !== today && Object.keys(s.topics).length) {
     snapshotPlan(s.meta.activePlanId ? 'recalc' : 'initial');
     s.meta.lastSnapshotDate = today;
     S.touchMeta();
@@ -352,7 +352,7 @@ export function applyRoute(id) {
       S.put('topics', s.topics[tid]);
     });
   }
-  S.touchMeta();
+  S.touchSettings();
   S.logEvent('route_selected', { id, dailyMin: opt?.dailyMin || null, skipped: opt?.skipIds?.length || 0 });
   snapshotPlan('recalc');
   S.commit();
@@ -385,7 +385,7 @@ export function bankruptcy({ examDate, weekdayMin, skipIds = [] }) {
   });
   snapshotPlan('restructure', true);
   s.meta.lastSnapshotDate = today;
-  S.touchMeta();
+  S.touchSettings();
   S.commit();
 }
 
@@ -483,6 +483,16 @@ export function saveSettings(f) {
     if (f[k] !== undefined && f[k] !== '') set[k] = clamp(Number(f[k]), lo, hi);
   };
   if (f.examDate !== undefined) set.examDate = f.examDate;
+  const perSubject = Object.entries(f).filter(([k]) => k.startsWith('exam:'));
+  if (perSubject.length) {
+    const next = { ...(set.subjectExams || {}) };
+    for (const [k, v] of perSubject) {
+      const subj = k.slice(5);
+      if (v) next[subj] = String(v);
+      else delete next[subj];
+    }
+    set.subjectExams = next;
+  }
   num('revisionBufferDays', 0, 60);
   num('weeklyRestDay', -1, 6);
   num('baselineWeekdayMin', 15, 600);
@@ -495,6 +505,19 @@ export function saveSettings(f) {
   if (f.theme !== undefined) set.theme = f.theme;
   if ('nudgesOn' in f) set.nudgesOn = !!f.nudgesOn;
   if (f.onboarded !== undefined) set.onboarded = !!f.onboarded;
-  S.touchMeta();
+  S.touchSettings();
   S.commit();
+}
+
+/** Subjects currently on your list (used to spot a newly added one). */
+export const subjectList = () => E.subjectsOf(st());
+
+/** After adding or importing topics: a short reminder for any brand-new subject. */
+export function newSubjectNote(before) {
+  const s = st();
+  const added = E.subjectsOf(s).filter((x) => !before.includes(x));
+  if (!added.length) return '';
+  const missing = added.filter((x) => !E.examDateFor(s.meta.settings, x));
+  if (missing.length) return ` New subject${added.length > 1 ? 's' : ''}: ${added.join(', ')}. Set ${missing.length > 1 ? 'their exam dates' : 'its exam date'} in Settings.`;
+  return ` New subject${added.length > 1 ? 's' : ''}: ${added.join(', ')}. ${added.length > 1 ? 'They use' : 'It uses'} the default exam date until you give ${added.length > 1 ? 'each its own' : 'it its own'} in Settings.`;
 }
