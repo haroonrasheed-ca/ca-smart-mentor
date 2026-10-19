@@ -1,8 +1,8 @@
 // Pure view builders: state in, HTML string out. No DOM access, so they can be smoke-tested in Node.
 
-import { liveTopics, liveSessions, subjectProgress, weeklyStats, studyCapital, modeTarget, paceSeries, routeOptions, courseOutlook } from './engine.js';
+import { liveTopics, liveSessions, subjectProgress, weeklyStats, studyCapital, modeTarget, paceSeries, routeOptions, courseOutlook, hasAnyExam, examDateFor, subjectsOf } from './engine.js';
 import * as M from './mentor.js';
-import { esc, fmtMin, fmtDate, fmtClock, addDays, parseD } from './utils.js';
+import { esc, fmtMin, fmtDate, fmtClock, addDays, parseD, diffDays } from './utils.js';
 import { paceChart } from './chart.js';
 
 const ENERGY = [
@@ -76,7 +76,7 @@ export function todayView(c) {
 }
 
 function setupCard(c, topicCount) {
-  const hasExam = !!c.st.meta.settings.examDate;
+  const hasExam = hasAnyExam(c.st);
   return card(
     `<h1 class="serif">Let’s plot your route</h1>
     <p class="lead">Two things and I’ll start doing the arithmetic for you: your exam date and your syllabus.</p>
@@ -228,9 +228,21 @@ function outlookCard(o) {
     <p>Overall difficulty: <b>${esc(o.toughness)}</b> <span class="muted">(${o.difficulty} / 5)</span></p>
     ${o.subjects
       .map(
-        (x) => `<div class="subj"><div class="split"><b>${esc(x.subject)} <span class="pill soft">${esc(x.toughness)}</span></b><span class="muted">${hrs(x.totalMin)} h · ${x.share}%</span></div>${bar(x.share)}</div>`
+        (x) => `<div class="subj"><div class="split"><b>${esc(x.subject)} <span class="pill soft">${esc(x.toughness)}</span></b><span class="muted">${hrs(x.totalMin)} h · ${x.share}%${x.exam && o.multi ? ` · exam ${fmtDate(x.exam)}` : ''}</span></div>${bar(x.share)}</div>`
       )
       .join('')}
+    ${
+      o.multi
+        ? `<p><b>Your exams</b></p><ul class="plain">${o.exams
+            .map((g) => {
+              const m = g.eta ? diffDays(g.eta, g.examDate) : null;
+              const how = m === null ? 'finish date is far out' : m >= 0 ? `forecast finish ${m} day${m === 1 ? '' : 's'} early` : `forecast ${-m} day${m === -1 ? '' : 's'} late`;
+              return `<li>${esc(g.subjects.join(' + '))}: exam ${fmtDate(g.examDate)} · ${how}</li>`;
+            })
+            .join('')}</ul>`
+        : ''
+    }
+    ${o.unscheduled && o.unscheduled.length ? `<p class="verdict warn">${esc(o.unscheduled.join(', '))} ${o.unscheduled.length > 1 ? 'have' : 'has'} no exam date yet, so ${o.unscheduled.length > 1 ? 'they are' : 'it is'} not in the schedule. Set one in Settings.</p>` : ''}
     ${o.hardest.length ? `<p class="muted">Hardest to get through: ${o.hardest.map((h) => `${esc(h.name)} (${fmtMin(h.min)})`).join(', ')}</p>` : ''}
     ${verdictText ? `<p class="verdict ${verdictText[0]}">${esc(verdictText[1])}</p>${o.verdict === 'stretch' || o.verdict === 'unrealistic' ? '<button class="btn primary" data-act="route-open">Choose a route</button>' : ''}` : ''}
     ${o.etaAtCapacity && o.examDate && o.verdict ? `<p class="muted">At your usual pace you would finish around ${fmtDate(o.etaAtCapacity)}.</p>` : ''}
@@ -317,7 +329,10 @@ export function topicsView(c) {
   ${subjects
     .map((subj) => {
       const list = ts.filter((t) => t.subject === subj);
-      return card(`<h2>${esc(subj)}</h2><ul class="topics">${list
+      const ex = examDateFor(c.st.meta.settings, subj);
+      const own = !!(c.st.meta.settings.subjectExams || {})[subj];
+      const examLine = ex ? `Exam ${fmtDate(ex)} · ${Math.max(0, diffDays(c.today, ex))} days left${own ? '' : ' (default date)'}` : 'No exam date yet. Set it in Settings.';
+      return card(`<h2>${esc(subj)}</h2><p class="tiny muted">${examLine}</p><ul class="topics">${list
         .map(
           (t) => `<li><button class="trow ${t.skip ? 'skipped' : ''}" data-act="topic-edit" data-id="${t.id}">
             <span class="tname"><b>${esc(t.name)}</b>${t.chapter ? `<br><span class="tiny muted">${esc(t.chapter)}</span>` : ''}</span>
@@ -340,13 +355,24 @@ export function settingsView(c) {
   return `<h1 class="serif">Settings</h1>
   <form data-form="settings">
   ${card(`<h2>Exam & plan</h2>
-    <label class="field-l">Exam date<input class="field" type="date" name="examDate" value="${esc(s.examDate)}"></label>
+    <label class="field-l">Default exam date <span class="tiny muted">(used by any subject without its own date below)</span><input class="field" type="date" name="examDate" value="${esc(s.examDate)}"></label>
     <label class="field-l">Revision buffer (days kept free before the exam)<input class="field" type="number" name="revisionBufferDays" min="0" max="60" value="${s.revisionBufferDays}"></label>
     <label class="field-l">Weekly rest day<select class="field" name="weeklyRestDay">${opt(-1, 'None', s.weeklyRestDay)}${days.map((d, i) => opt(i, d, s.weeklyRestDay)).join('')}</select></label>
     <label class="field-l">Realistic minutes on a normal office day<input class="field" type="number" name="baselineWeekdayMin" min="15" max="600" value="${s.baselineWeekdayMin}"></label>
     <label class="field-l">Empty-battery (maintenance) minutes<input class="field" type="number" name="maintenanceMin" min="10" max="120" value="${s.maintenanceMin}"></label>
     <label class="field-l">Minutes that keep a streak day alive<input class="field" type="number" name="minStreakMin" min="5" max="600" value="${s.minStreakMin}"></label>
     <label class="field-l">Landing-pad rest (minutes)<input class="field" type="number" name="landingPadMin" min="5" max="60" value="${s.landingPadMin}"></label>`)}
+  ${card(`<h2>Exam date for each subject</h2>${
+    subjectsOf(c.st).length
+      ? `<p class="muted">Give every subject its own date. The plan covers the nearest exam first. Leave one blank to use the default date.</p>${subjectsOf(c.st)
+          .map((subj) => {
+            const own = (s.subjectExams || {})[subj] || '';
+            const hint = own ? '' : s.examDate ? 'uses the default date' : 'no date yet';
+            return `<label class="field-l">${esc(subj)} <span class="tiny muted">${hint}</span><input class="field" type="date" name="exam:${esc(subj)}" value="${esc(own)}"></label>`;
+          })
+          .join('')}`
+      : '<p class="muted">Add your topics and every new subject gets its own exam date field here.</p>'
+  }`)}
   ${card(`<h2>Habit</h2>
     <label class="field-l">Your if-then sentence<input class="field" name="ifThen" maxlength="200" placeholder="If I finish dinner, then I tap START before picking up my phone." value="${esc(s.ifThen)}"></label>
     <label class="field-l">Study-only treat<input class="field" name="reward" maxlength="120" placeholder="e.g. my favourite podcast, or masala chai" value="${esc(s.reward)}"></label>
@@ -356,7 +382,7 @@ export function settingsView(c) {
   </form>
   <form data-form="conn">
   ${card(`<h2>Google Sheet sync</h2>
-    <p class="muted">Your data stays on this device and mirrors to your own Google Sheet. The link and token are stored only on this device.</p>
+    <p class="muted">Your data stays on this device and mirrors to your own Google Sheet. Use the same URL and token on every device: your settings, topics and sessions then follow you everywhere (the colour theme stays per device). The link and token are stored only on this device.</p>
     <label class="field-l">Web App URL (ends with /exec)<input class="field" name="url" inputmode="url" autocomplete="off" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(conn.url)}"></label>
     <label class="field-l">Token (same as API_TOKEN in Code.gs)<input class="field" type="password" name="token" autocomplete="off" value="${esc(conn.token)}"></label>
     <p class="muted" id="sync-status">${esc(c.sync.msg || (conn.url ? `Last synced: ${lastSync}` : 'Not connected yet.'))}</p>
