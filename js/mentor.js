@@ -24,6 +24,13 @@ export function statusCard(plan) {
     case 'ahead':
       return { tone: 'good', title: 'Ahead of plan', body: `About ${days(plan.gapDays)} ahead. Keep the rhythm: ${fmtMin(t)} tonight is plenty.` };
     case 'behind':
+      if (plan.multi && plan.worst && Math.abs(plan.gapDays) < 1) {
+        return {
+          tone: 'warm',
+          title: 'One exam is tight',
+          body: `${plan.worst.subjects.join(' + ')} (exam ${fmtDate(plan.worst.examDate)}) is the one at risk. ${fmtMin(plan.unitTarget)} a day keeps it safe.`
+        };
+      }
       return {
         tone: 'warm',
         title: 'Route recalculated',
@@ -37,8 +44,18 @@ export function statusCard(plan) {
 export function headline(plan) {
   if (plan.status === 'setup') return 'Set your exam date to see your forecast.';
   if (plan.status === 'done') return 'Syllabus covered. Revision is the only job left.';
-  if (!plan.etaDate) return plan.velocity.provisional ? 'Log a few sessions and I’ll forecast your finish date.' : 'At this pace the finish date is far out. Your route options can fix that.';
+  if (!plan.etaDate) {
+    if (plan.velocity.provisional) return 'Log a few sessions and I’ll forecast your finish date.';
+    if (plan.multi && plan.worst) return `At this pace ${plan.worst.subjects.join(' + ')} finishes far after its exam. Your route options can fix that.`;
+    return 'At this pace the finish date is far out. Your route options can fix that.';
+  }
   const margin = Math.round((new Date(plan.examDate) - new Date(plan.etaDate)) / 86400000);
+  if (plan.multi && plan.worst) {
+    const who = plan.worst.subjects.join(' + ');
+    if (margin > 0) return `At this pace ${who} finishes ${days(margin)} before its exam, the tightest of your exams.`;
+    if (margin === 0) return `At this pace ${who} finishes right on its exam day.`;
+    return `At this pace ${who} finishes about ${days(margin)} after its exam. Your route can close that.`;
+  }
   if (margin > 0) return `At this pace you finish ${days(margin)} before your exam.`;
   if (margin === 0) return 'At this pace you finish right on exam day.';
   return `At this pace you finish about ${days(margin)} after your exam. Your route can close that.`;
